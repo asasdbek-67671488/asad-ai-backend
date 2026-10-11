@@ -48,49 +48,73 @@ app.get("/api/models", (req, res) => {
   });
 });
 
-app.post(
-  "/api/generate",
-  upload.fields([
-    { name: "images", maxCount: 9 },
-    { name: "video", maxCount: 1 }
-  ]),
-  async (req, res) => {
-    try {
-      const { model, prompt, mode, ratio, duration } = req.body;
-      const selected = MODELS.find(item => item.id === model);
 
-      if (!selected) {
-        return res.status(400).json({ error: "Неизвестная модель" });
-      }
-
-      if (!prompt || !prompt.trim()) {
-        return res.status(400).json({ error: "Напиши описание видео" });
-      }
-
-      const prefix = selected.env;
-      const url = process.env[`${prefix}_URL`];
-      const key = process.env[`${prefix}_KEY`];
-      const providerModel = process.env[`${prefix}_MODEL`];
-
-      if (!url || !key || !providerModel) {
+      if (selected.id !== "asad5") {
         return res.status(503).json({
-          error: `API модели «${selected.name}» ещё не настроен`
+          error: "Эта модель пока не подключена"
         });
       }
 
-      return res.status(501).json({
-        error: `Настройки найдены для «${selected.name}», но адаптер API провайдера ещё не реализован. Нужен формат запросов этого API.`,
-        model: selected.id,
-        mode: mode || "image"
+      const apiKey = process.env.TIKDEK_API_KEY;
+
+      if (!apiKey) {
+        return res.status(503).json({
+          error: "Не задан TIKDEK_API_KEY в Render"
+        });
+      }
+
+      const modelId = "video:sora2-pro-text-to-video";
+
+      const upstream = await fetch(
+        "https://tikdek.com/api/ai-studio/execute",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            modelId,
+            isPublic: false,
+            payload: {
+              model: modelId,
+              input: {
+                prompt: prompt.trim()
+              }
+            }
+          })
+        }
+      );
+
+      const raw = await upstream.text();
+      let data;
+
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        console.error("Tikdek returned non-JSON:", raw.slice(0, 300));
+        return res.status(502).json({
+          error: "Tikdek вернул не JSON",
+          httpStatus: upstream.status
+        });
+      }
+
+      if (!upstream.ok || data.success === false) {
+        console.error("Tikdek API error:", data);
+        return res.status(502).json({
+          error: data.error || "Tikdek отклонил запрос"
+        });
+      }
+
+      return res.json({
+        ok: true,
+        status: data.data?.state || "queued",
+        taskId: data.data?.taskId,
+        generationId: data.data?.generationId,
+        message: "Задача отправлена в Tikdek"
       });
-    } catch (error) {
-      console.error("Generation error:", error.message);
-      return res.status(500).json({
-        error: "Ошибка backend"
-      });
-    }
-  }
-);
+
+
 
 app.use((err, req, res, next) => {
   console.error("Request error:", err.message);
