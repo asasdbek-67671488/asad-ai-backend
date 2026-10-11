@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -11,24 +12,19 @@ app.use(express.json({ limit: "20mb" }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 25 * 1024 * 1024,
-    files: 10
-  }
+  limits: { fileSize: 25 * 1024 * 1024, files: 10 }
 });
 
-const MODELS = {
-  asad5: null,
-  seedance25: "bytedance/seedance-2.0/fast",
-  seedance20fast: "bytedance/seedance-2.0/fast",
-  seedance20: "bytedance/seedance-2.0",
-  omni11: null,
-  sora3: null,
-  veo31fast: null,
-  veo31: null
-};
-
-const tasks = new Map();
+const MODELS = [
+  { id: "asad5", name: "Asad AI 5.0 Generator", env: "SORA2_PRO" },
+  { id: "seedance25", name: "Seedance 2.5 Fast", env: "SEEDANCE25" },
+  { id: "seedance20fast", name: "Seedance 2.0 Fast", env: "SEEDANCE_FAST" },
+  { id: "seedance20", name: "Seedance 2.0", env: "SEEDANCE" },
+  { id: "omni11", name: "Omni Flash 1.1", env: "OMNI_FLASH" },
+  { id: "veo31fast", name: "Veo 3.1 Fast", env: "VEO_FAST" },
+  { id: "veo31", name: "Veo 3.1", env: "VEO" },
+  { id: "sora3", name: "Sora 3 Beta", env: "OMNI_FLASH" }
+];
 
 app.get("/", (req, res) => {
   res.json({ name: "AsadAI Backend", status: "running" });
@@ -40,9 +36,14 @@ app.get("/health", (req, res) => {
 
 app.get("/api/models", (req, res) => {
   res.json({
-    models: Object.entries(MODELS).map(([id, endpoint]) => ({
-      id,
-      enabled: Boolean(endpoint && process.env.FAL_KEY)
+    models: MODELS.map(model => ({
+      id: model.id,
+      name: model.name,
+      enabled: Boolean(
+        process.env[`${model.env}_URL`] &&
+        process.env[`${model.env}_KEY`] &&
+        process.env[`${model.env}_MODEL`]
+      )
     }))
   });
 });
@@ -56,156 +57,43 @@ app.post(
   async (req, res) => {
     try {
       const { model, prompt, mode, ratio, duration } = req.body;
-      const base = MODELS[model];
+      const selected = MODELS.find(item => item.id === model);
 
-      if (!process.env.FAL_KEY) {
-        return res.status(503).json({
-          error: "На Render не настроен FAL_KEY"
-        });
-      }
-
-      if (!base) {
-        return res.status(503).json({
-          error: "Для этой модели API ещё не подключён",
-          model
-        });
+      if (!selected) {
+        return res.status(400).json({ error: "Неизвестная модель" });
       }
 
       if (!prompt || !prompt.trim()) {
-        return res.status(400).json({
-          error: "Напиши описание видео"
+        return res.status(400).json({ error: "Напиши описание видео" });
+      }
+
+      const prefix = selected.env;
+      const url = process.env[`${prefix}_URL`];
+      const key = process.env[`${prefix}_KEY`];
+      const providerModel = process.env[`${prefix}_MODEL`];
+
+      if (!url || !key || !providerModel) {
+        return res.status(503).json({
+          error: `API модели «${selected.name}» ещё не настроен`
         });
       }
 
-      if (!["image", "video"].includes(mode)) {
-        return res.status(400).json({
-          error: "Неизвестный режим создания"
-        });
-      }
-
-      const images = req.files?.images || [];
-      const videos = req.files?.video || [];
-
-      if (mode === "image" && !images.length) {
-        return res.status(400).json({
-          error: "Выбери изображение"
-        });
-      }
-
-      if (mode === "video") {
-        return res.status(400).json({
-          error: "Преобразование исходного видео пока не подключено"
-        });
-      }
-
-      const { fal } = await import("@fal-ai/client");
-
-      fal.config({
-        credentials: process.env.FAL_KEY
-      });
-
-      const uploaded = [];
-
-      for (const file of images) {
-        const imageFile = new File(
-          [file.buffer],
-          file.originalname,
-          { type: file.mimetype }
-        );
-
-        uploaded.push(await fal.storage.upload(imageFile));
-      }
-
-      const endpoint =
-        uploaded.length > 1
-          ? `${base}/reference-to-video`
-          : `${base}/image-to-video`;
-
-      const input = {
-        prompt: prompt.trim(),
-        aspect_ratio: ratio || "9:16",
-        image_url: uploaded[0]
-      };
-
-      if (uploaded.length > 1) {
-        delete input.image_url;
-        input.image_urls = uploaded;
-      }
-
-      input.duration = String(
-        Math.min(15, Math.max(4, Number(duration) || 5))
-      );
-      input.resolution = "720p";
-      input.generate_audio = true;
-
-      const submitted = await fal.queue.submit(endpoint, { input });
-
-      tasks.set(submitted.request_id, endpoint);
-
-      return res.json({
-        ok: true,
-        status: "queued",
-        taskId: submitted.request_id
+      return res.status(501).json({
+        error: `Настройки найдены для «${selected.name}», но адаптер API провайдера ещё не реализован. Нужен формат запросов этого API.`,
+        model: selected.id,
+        mode: mode || "image"
       });
     } catch (error) {
-      console.error("Generation error:", error);
-
+      console.error("Generation error:", error.message);
       return res.status(500).json({
-        error: "Не удалось отправить задачу генерации",
-        details: error.message
+        error: "Ошибка backend"
       });
     }
   }
 );
 
-app.get("/api/status/:taskId", async (req, res) => {
-  try {
-    const endpoint = tasks.get(req.params.taskId);
-
-    if (!endpoint) {
-      return res.status(404).json({
-        error: "Задача не найдена. Возможно, сервер перезапускался."
-      });
-    }
-
-    const { fal } = await import("@fal-ai/client");
-
-    fal.config({
-      credentials: process.env.FAL_KEY
-    });
-
-    const status = await fal.queue.status(endpoint, {
-      requestId: req.params.taskId
-    });
-
-    if (status.status !== "COMPLETED") {
-      return res.json({
-        status: status.status.toLowerCase()
-      });
-    }
-
-    const result = await fal.queue.result(endpoint, {
-      requestId: req.params.taskId
-    });
-
-    tasks.delete(req.params.taskId);
-
-    return res.json({
-      status: "completed",
-      videoUrl: result.data.video?.url
-    });
-  } catch (error) {
-    console.error("Status error:", error);
-
-    return res.status(500).json({
-      error: "Не удалось проверить результат генерации"
-    });
-  }
-});
-
 app.use((err, req, res, next) => {
   console.error("Request error:", err.message);
-
   res.status(err.status || 500).json({
     error: err.message || "Ошибка обработки запроса"
   });
@@ -214,3 +102,4 @@ app.use((err, req, res, next) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`AsadAI backend listening on port ${PORT}`);
 });
+
