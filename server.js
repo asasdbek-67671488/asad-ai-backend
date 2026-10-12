@@ -1,129 +1,152 @@
-
 const express = require("express");
-const cors = require("cors");
 const multer = require("multer");
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
-
-app.disable("x-powered-by");
-app.use(cors());
-app.use(express.json({ limit: "20mb" }));
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024, files: 10 }
-});
-
-const MODELS = [
-  { id: "asad5", name: "Asad AI 5.0 Generator", env: "SORA2_PRO" },
-  { id: "seedance25", name: "Seedance 2.5 Fast", env: "SEEDANCE25" },
-  { id: "seedance20fast", name: "Seedance 2.0 Fast", env: "SEEDANCE_FAST" },
-  { id: "seedance20", name: "Seedance 2.0", env: "SEEDANCE" },
-  { id: "omni11", name: "Omni Flash 1.1", env: "OMNI_FLASH" },
-  { id: "veo31fast", name: "Veo 3.1 Fast", env: "VEO_FAST" },
-  { id: "veo31", name: "Veo 3.1", env: "VEO" },
-  { id: "sora3", name: "Sora 3 Beta", env: "OMNI_FLASH" }
-];
+const API_KEY = process.env.TIKDEK_API_KEY;
+const API_URL = "https://tikdek.com/api/ai-studio";
 
 app.get("/", (req, res) => {
-  res.json({ name: "AsadAI Backend", status: "running" });
+  res.json({ status: "ok", service: "Asad AI Backend" });
 });
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
-
-app.get("/api/models", (req, res) => {
-  res.json({
-    models: MODELS.map(model => ({
-      id: model.id,
-      name: model.name,
-      enabled: Boolean(
-        process.env[`${model.env}_URL`] &&
-        process.env[`${model.env}_KEY`] &&
-        process.env[`${model.env}_MODEL`]
-      )
-    }))
-  });
-});
-
-
-      if (selected.id !== "asad5") {
-        return res.status(503).json({
-          error: "Эта модель пока не подключена"
+app.post(
+  "/api/generate",
+  upload.fields([
+    { name: "images", maxCount: 10 },
+    { name: "video", maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      if (!API_KEY) {
+        return res.status(500).json({
+          error: "TIKDEK_API_KEY is missing in Render environment"
         });
       }
 
-      const apiKey = process.env.TIKDEK_API_KEY;
+      const { model, mode, prompt, ratio, duration } = req.body;
 
-      if (!apiKey) {
-        return res.status(503).json({
-          error: "Не задан TIKDEK_API_KEY в Render"
+      const modelId = process.env["TIKDEK_MODEL_" + String(model).toUpperCase()];
+
+      if (!modelId) {
+        return res.status(400).json({
+          error: `Tikdek model ID is not configured for: ${model}`
         });
       }
 
-      const modelId = "video:sora2-pro-text-to-video";
+      const payload = {
+        prompt: prompt || "",
+        aspectRatio: ratio || "9:16"
+      };
 
-      const upstream = await fetch(
-        "https://tikdek.com/api/ai-studio/execute",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            modelId,
-            isPublic: false,
-            payload: {
-              model: modelId,
-              input: {
-                prompt: prompt.trim()
-              }
-            }
-          })
-        }
-      );
+      if (duration) payload.duration = Number(duration);
 
-      const raw = await upstream.text();
-      let data;
+      const images = req.files?.images || [];
+      const videos = req.files?.video || [];
 
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        console.error("Tikdek returned non-JSON:", raw.slice(0, 300));
-        return res.status(502).json({
-          error: "Tikdek вернул не JSON",
-          httpStatus: upstream.status
+      if (images.length || videos.length) {
+        return res.status(400).json({
+          error: "This model integration needs its documented file-upload format before media can be sent."
         });
       }
 
-      if (!upstream.ok || data.success === false) {
-        console.error("Tikdek API error:", data);
-        return res.status(502).json({
-          error: data.error || "Tikdek отклонил запрос"
-        });
-      }
-
-      return res.json({
-        ok: true,
-        status: data.data?.state || "queued",
-        taskId: data.data?.taskId,
-        generationId: data.data?.generationId,
-        message: "Задача отправлена в Tikdek"
+      const upstream = await fetch(`${API_URL}/execute`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          modelId,
+          isPublic: false,
+          payload
+        })
       });
 
+      const data = await upstream.json();
 
+      if (!upstream.ok) {
+        return res.status(upstream.status).json({
+          error: "Tikdek generation request failed",
+          details: data
+        });
+      }
 
-app.use((err, req, res, next) => {
-  console.error("Request error:", err.message);
-  res.status(err.status || 500).json({
-    error: err.message || "Ошибка обработки запроса"
-  });
+      const taskId = data?.data?.taskId || data?.taskId;
+
+      if (!taskId) {
+        return res.status(502).json({
+          error: "Tikdek did not return a task ID",
+          details: data
+        });
+      }
+
+      for (let i = 0; i < 60; i++) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        const statusResponse = await fetch(
+          `${API_URL}/tasks/${encodeURIComponent(taskId)}?modelId=${encodeURIComponent(modelId)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${API_KEY}`
+            }
+          }
+        );
+
+        const statusData = await statusResponse.json();
+
+        if (!statusResponse.ok) {
+          return res.status(502).json({
+            error: "Could not check Tikdek task status",
+            details: statusData
+          });
+        }
+
+        const task = statusData?.data || statusData;
+        const state = String(task?.state || task?.status || "").toLowerCase();
+
+        const urls =
+          task?.mediaUrls ||
+          task?.result?.mediaUrls ||
+          task?.output?.mediaUrls ||
+          [];
+
+        const videoUrl =
+          task?.videoUrl ||
+          task?.result?.videoUrl ||
+          task?.output?.videoUrl ||
+          (Array.isArray(urls) ? urls[0] : null);
+
+        if (videoUrl) {
+          return res.json({ videoUrl, taskId });
+        }
+
+        if (["failed", "error", "cancelled", "canceled"].includes(state)) {
+          return res.status(502).json({
+            error: "Tikdek generation failed",
+            details: task
+          });
+        }
+      }
+
+      return res.status(202).json({
+        taskId,
+        status: "processing",
+        message: "Generation is still processing; check task status again."
+      });
+    } catch (error) {
+      console.error("Generation error:", error);
+      return res.status(500).json({
+        error: error.message || "Internal server error"
+      });
+    }
+  }
+);
+
+app.listen(PORT, () => {
+  console.log(`Asad AI backend listening on port ${PORT}`);
 });
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`AsadAI backend listening on port ${PORT}`);
-});
-
