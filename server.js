@@ -23,7 +23,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.TIKDEK_API_KEY;
+const API_KEY = process.env.SORA2_PRO_KEY;
 const API_URL = "https://tikdek.com/api/ai-studio";
 
 app.get("/", (req, res) => {
