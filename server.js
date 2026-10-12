@@ -1,168 +1,225 @@
+
 const express = require("express");
-const multer = require("multer");
 
 const app = express();
+app.use(express.json({ limit: "20mb" }));
 
-// ВСТАВЬ CORS-КОД ЗДЕСЬ
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "https://asasdbek-67671488.github.io");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data");
+const PORT = process.env.PORT || 3000;
 
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
+// Все настройки читаются из Render Environment Variables.
+const PROVIDERS = {
+  sora2pro: {
+    url: process.env.SORA2_PRO_URL,
+    key: process.env.SORA2_PRO_KEY,
+    model: process.env.SORA2_PRO_MODEL,
+  },
+  seedanceFast: {
+    url: process.env.SEEDANCE_FAST_URL,
+    key: process.env.SEEDANCE_FAST_KEY,
+    model: process.env.SEEDANCE_FAST_MODEL,
+  },
+  seedance: {
+    url: process.env.SEEDANCE_URL,
+    key: process.env.SEEDANCE_KEY,
+    model: process.env.SEEDANCE_MODEL,
+  },
+  omniFlash: {
+    url: process.env.OMNI_FLASH_URL,
+    key: process.env.OMNI_FLASH_KEY,
+    model: process.env.OMNI_FLASH_MODEL,
+  },
+  veoFast: {
+    url: process.env.VEO_FAST_URL,
+    key: process.env.VEO_FAST_KEY,
+    model: process.env.VEO_FAST_MODEL,
+  },
+  veo: {
+    url: process.env.VEO_URL,
+    key: process.env.VEO_KEY,
+    model: process.env.VEO_MODEL,
+  },
+};
+
+// Внутренний ID сайта -> настройки провайдера.
+const MODELS = {
+  asad5: {
+    name: "Asad AI 5.0 Generator",
+    provider: "sora2pro",
+    fallbackModel: "tikdek-sora-2-pro",
+  },
+  seedance25: {
+    name: "Seedance 2.5 Fast",
+    provider: "seedanceFast",
+  },
+  seedance20fast: {
+    name: "Seedance 2.0 Fast",
+    provider: "seedanceFast",
+  },
+  seedance20: {
+    name: "Seedance 2.0",
+    provider: "seedance",
+  },
+  omni11: {
+    name: "Omni Flash 1.1",
+    provider: "omniFlash",
+  },
+  sora3: {
+    name: "Sora 3 Beta",
+    provider: "omniFlash",
+  },
+  veo31fast: {
+    name: "Veo 3.1 Fast",
+    provider: "veoFast",
+  },
+  veo31: {
+    name: "Veo 3.1",
+    provider: "veo",
+  },
+};
+
+function getConfig(modelId) {
+  const definition = MODELS[modelId];
+
+  if (!definition) {
+    const error = new Error("Unknown model: " + modelId);
+    error.status = 400;
+    throw error;
   }
 
-  next();
-});
+  const provider = PROVIDERS[definition.provider];
 
-// Дальше остальной код сервера
+  if (!provider?.url || !provider?.key) {
+    const error = new Error(
+      "Provider URL or API key is missing for model: " + modelId
+    );
+    error.status = 503;
+    throw error;
+  }
 
-const upload = multer({ storage: multer.memoryStorage() });
+  const model = provider.model || definition.fallbackModel;
 
-app.use(express.json());
+  if (!model) {
+    const error = new Error(
+      "Provider model ID is not configured for: " + modelId
+    );
+    error.status = 503;
+    throw error;
+  }
 
-const PORT = process.env.PORT || 10000;
-const API_KEY = process.env.SORA2_PRO_KEY;
-const API_URL = "https://tikdek.com/api/ai-studio";
+  return { definition, provider, model };
+}
 
-app.get("/", (req, res) => {
-  res.json({ status: "ok", service: "Asad AI Backend" });
-});
+// Список моделей для интерфейса.
+app.get("/api/models", (req, res) => {
+  res.json({
+    models: Object.entries(MODELS).map(([id, item]) => {
+      const config = PROVIDERS[item.provider];
+      const configured = Boolean(
+        config?.url &&
+        config?.key &&
+        (config?.model || item.fallbackModel)
+      );
 
-app.post(
-  "/api/generate",
-  upload.fields([
-    { name: "images", maxCount: 10 },
-    { name: "video", maxCount: 1 }
-  ]),
-  async (req, res) => {
-    try {
-      if (!API_KEY) {
-        return res.status(500).json({
-          error: "TIKDEK_API_KEY is missing in Render environment"
-        });
-      }
-
-      const { model, mode, prompt, ratio, duration } = req.body;
-
-      const modelId = process.env["TIKDEK_MODEL_" + String(model).toUpperCase()];
-
-      if (!modelId) {
-        return res.status(400).json({
-          error: `Tikdek model ID is not configured for: ${model}`
-        });
-      }
-
-      const payload = {
-        prompt: prompt || "",
-        aspectRatio: ratio || "9:16"
+      return {
+        id,
+        name: item.name,
+        enabled: configured,
       };
+    }),
+  });
+});
 
-      if (duration) payload.duration = Number(duration);
+// Проверка состояния backend без раскрытия API-ключей.
+app.get("/health", (req, res) => {
+  res.json({ ok: true, service: "Asad AI backend" });
+});
 
-      const images = req.files?.images || [];
-      const videos = req.files?.video || [];
+// Запуск генерации.
+// ВАЖНО: формат тела запроса необходимо согласовать
+// с фактической документацией API выбранного провайдера.
+app.post("/api/generate", async (req, res) => {
+  try {
+    const {
+      model: modelId,
+      prompt,
+      duration,
+      aspectRatio,
+      image,
+      video,
+    } = req.body || {};
 
-      if (images.length || videos.length) {
-        return res.status(400).json({
-          error: "This model integration needs its documented file-upload format before media can be sent."
-        });
-      }
-
-      const upstream = await fetch(`${API_URL}/execute`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          modelId,
-          isPublic: false,
-          payload
-        })
-      });
-
-      const data = await upstream.json();
-
-      if (!upstream.ok) {
-        return res.status(upstream.status).json({
-          error: "Tikdek generation request failed",
-          details: data
-        });
-      }
-
-      const taskId = data?.data?.taskId || data?.taskId;
-
-      if (!taskId) {
-        return res.status(502).json({
-          error: "Tikdek did not return a task ID",
-          details: data
-        });
-      }
-
-      for (let i = 0; i < 60; i++) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
-        const statusResponse = await fetch(
-          `${API_URL}/tasks/${encodeURIComponent(taskId)}?modelId=${encodeURIComponent(modelId)}`,
-          {
-            headers: {
-              Authorization: `Bearer ${API_KEY}`
-            }
-          }
-        );
-
-        const statusData = await statusResponse.json();
-
-        if (!statusResponse.ok) {
-          return res.status(502).json({
-            error: "Could not check Tikdek task status",
-            details: statusData
-          });
-        }
-
-        const task = statusData?.data || statusData;
-        const state = String(task?.state || task?.status || "").toLowerCase();
-
-        const urls =
-          task?.mediaUrls ||
-          task?.result?.mediaUrls ||
-          task?.output?.mediaUrls ||
-          [];
-
-        const videoUrl =
-          task?.videoUrl ||
-          task?.result?.videoUrl ||
-          task?.output?.videoUrl ||
-          (Array.isArray(urls) ? urls[0] : null);
-
-        if (videoUrl) {
-          return res.json({ videoUrl, taskId });
-        }
-
-        if (["failed", "error", "cancelled", "canceled"].includes(state)) {
-          return res.status(502).json({
-            error: "Tikdek generation failed",
-            details: task
-          });
-        }
-      }
-
-      return res.status(202).json({
-        taskId,
-        status: "processing",
-        message: "Generation is still processing; check task status again."
-      });
-    } catch (error) {
-      console.error("Generation error:", error);
-      return res.status(500).json({
-        error: error.message || "Internal server error"
+    if (!modelId || typeof modelId !== "string") {
+      return res.status(400).json({
+        error: "Не выбрана модель.",
       });
     }
+
+    if (!prompt || typeof prompt !== "string") {
+      return res.status(400).json({
+        error: "Добавь описание видео.",
+      });
+    }
+
+    const { provider, model } = getConfig(modelId);
+
+    // Универсальный JSON нельзя считать совместимым
+    // со всеми API. Это диагностический шаблон запроса.
+    const payload = {
+      model,
+      prompt,
+      duration,
+      aspect_ratio: aspectRatio,
+      image,
+      video,
+    };
+
+    const response = await fetch(provider.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${provider.key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!response.ok) {
+      console.error("Provider error:", {
+        modelId,
+        status: response.status,
+        response: data,
+      });
+
+      return res.status(502).json({
+        error: "Провайдер отклонил запрос генерации.",
+        providerStatus: response.status,
+        details: data,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      model: modelId,
+      result: data,
+    });
+  } catch (error) {
+    console.error("Generation error:", error.message);
+
+    return res.status(error.status || 500).json({
+      error: error.message || "Ошибка генерации.",
+    });
   }
-);
+});
 
 app.listen(PORT, () => {
   console.log(`Asad AI backend listening on port ${PORT}`);
 });
+
