@@ -2,6 +2,22 @@ const express = require("express");
 const multer = require("multer");
 
 const app = express();
+
+// ВСТАВЬ CORS-КОД ЗДЕСЬ
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "https://asasdbek-67671488.github.io");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+// Дальше остальной код сервера
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(express.json());
